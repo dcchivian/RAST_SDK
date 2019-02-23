@@ -1,4 +1,4 @@
-FROM kbase/kbase:sdkbase.latest
+FROM kbase/kbase:sdkbase2.latest
 MAINTAINER KBase Developer
 # -----------------------------------------
 
@@ -6,13 +6,12 @@ MAINTAINER KBase Developer
 # any required dependencies for your module.
 
 # RUN apt-get update
-RUN cpanm -i Config::IniFiles
-RUN cpanm -i Config::IniFiles
-RUN cpanm -i UUID::Random
-RUN cpanm -i HTML::SimpleLinkExtor
-RUN cpanm -i WWW::Mechanize --force
-RUN cpanm -i MIME::Base64
-RUN apt-get -y install nano
+RUN cpanm -i Config::IniFiles && \
+    cpanm -i UUID::Random && \
+    cpanm -i HTML::SimpleLinkExtor && \
+    cpanm -i WWW::Mechanize --force && \
+    cpanm -i MIME::Base64 && \
+    apt-get -y install nano
 
 ADD ./bootstrap bootstrap
 
@@ -22,7 +21,15 @@ RUN \
     ./build.glimmer /kb/runtime/ && \
     ./build.elph /kb/runtime/ && \
     ./build.prodigal /kb/runtime/ && \
+    ./build.phispy /kb/runtime/ && \
     cd .. && rm -rf bootstrap
+
+# Add random forest for phispy
+RUN \
+    wget https://cran.r-project.org/src/contrib/Archive/randomForest/randomForest_4.6-12.tar.gz && \
+    R CMD INSTALL ./randomForest_4.6-12.tar.gz && \
+    rm randomForest_4.6-12.tar.gz
+
 
 # Build kb_seed
 RUN cd /kb/dev_container/modules && \
@@ -47,6 +54,7 @@ RUN \
     cpanm install Set::IntervalTree && \
     cd /kb/deployment/services/kmer_annotation_figfam/ && \
     sed 's|$KB_TOP/deployment.cfg|/kb/module/deploy.cfg|' -i ./start_service  && \
+    sed 's|$KB_TOP/services/kmer_annotation_figfam|/tmp/|' -i ./start_service  && \
     sed 's/8/1/' -i ./start_service 
 
 RUN mkdir /data && \
@@ -65,6 +73,9 @@ RUN chmod -R 777 /kb/deployment/services/kmer_annotation_figfam
 WORKDIR /kb/module
 
 RUN make
+
+# try to force tmp files to be written to right spot
+RUN rm -rf /tmp && ln -s /kb/module/work/tmp /tmp
 
 ENTRYPOINT [ "./scripts/entrypoint.sh" ]
 

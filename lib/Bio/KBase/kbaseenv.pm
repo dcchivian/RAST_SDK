@@ -5,8 +5,34 @@ use Bio::KBase::utilities;
 
 our $ws_client = undef;
 our $ga_client = undef;
+our $gfu_client = undef;
 our $ac_client = undef;
+our $su_client = undef;
+our $data_file_client = undef;
 our $objects_created = [];
+
+sub log {
+	my ($msg,$tag) = @_;
+	if (defined($tag) && $tag eq "debugging") {
+		if (defined(Bio::KBase::utilities::utilconf("debugging")) && Bio::KBase::utilities::utilconf("debugging") == 1) {
+			print $msg."\n";
+		}
+	} else {
+		print $msg."\n";
+	}
+}
+
+sub data_file_client {
+	my($parameters) = @_;
+	$parameters = Bio::KBase::utilities::args($parameters,[],{
+		refresh => 0
+	});
+	if ($parameters->{refresh} == 1 || !defined($data_file_client)) {
+		require "DataFileUtil/DataFileUtilClient.pm";
+		$data_file_client = new DataFileUtil::DataFileUtilClient(Bio::KBase::utilities::utilconf("call_back_url"));
+	}
+	return $data_file_client;
+}
 
 #create_report: creates a report object using the KBaseReport service
 sub create_report {
@@ -20,16 +46,8 @@ sub create_report {
 		message => ""
 	});
 	my $kr;
-	if (Bio::KBase::utilities::utilconf("reportimpl") == 1) {
-		require "KBaseReport/KBaseReportImpl.pm";
-		$kr = new KBaseReport::KBaseReportImpl();
-		if (!defined($KBaseReport::KBaseReportServer::CallContext)) {
-			$KBaseReport::KBaseReportServer::CallContext = Bio::KBase::utilities::context();
-		}
-	} else {
-		require "KBaseReport/KBaseReportClient.pm";
-		$kr = new KBaseReport::KBaseReportClient(Bio::KBase::utilities::utilconf("call_back_url"),token => Bio::KBase::utilities::token());
-	}
+	require "KBaseReport/KBaseReportClient.pm";
+	$kr = new KBaseReport::KBaseReportClient(Bio::KBase::utilities::utilconf("call_back_url"),token => Bio::KBase::utilities::token());
 	if (defined(Bio::KBase::utilities::utilconf("debugging")) && Bio::KBase::utilities::utilconf("debugging") == 1) {
 		Bio::KBase::utilities::add_report_file({
 			path => Bio::KBase::utilities::utilconf("debugfile"),
@@ -77,7 +95,11 @@ sub ws_client {
 		refresh => 0
 	});
 	if ($parameters->{refresh} == 1 || !defined($ws_client)) {
-		$ws_client = new Bio::KBase::workspace::Client(Bio::KBase::utilities::utilconf("workspace-url"),token => Bio::KBase::utilities::token());
+		require "Workspace/WorkspaceClient.pm";
+		$ws_client = new Workspace::WorkspaceClient(Bio::KBase::utilities::utilconf("workspace-url"),
+					token => Bio::KBase::utilities::token());
+#					auth_svc => Bio::KBase::utilities::utilconf("auth-service-url")
+#				);
 	}
 	return $ws_client;
 }
@@ -94,6 +116,18 @@ sub ga_client {
 	return $ga_client;
 }
 
+sub gfu_client {
+	my($parameters) = @_;
+	$parameters = Bio::KBase::utilities::args($parameters,[],{
+		refresh => 0
+	});
+	if ($parameters->{refresh} == 1 || !defined($gfu_client)) {
+		require "GenomeFileUtil/GenomeFileUtilClient.pm";
+		$gfu_client = new GenomeFileUtil::GenomeFileUtilClient(Bio::KBase::utilities::utilconf("call_back_url"));
+	}
+	return $gfu_client;
+}
+
 sub ac_client {
 	my($parameters) = @_;
 	$parameters = Bio::KBase::utilities::args($parameters,[],{
@@ -106,20 +140,46 @@ sub ac_client {
 	return $ac_client;
 }
 
+sub su_client {
+	my($parameters) = @_;
+	$parameters = Bio::KBase::utilities::args($parameters,[],{
+		refresh => 0
+	});
+	if ($parameters->{refresh} == 1 || !defined($su_client)) {
+		require "installed_clients/kb_SetUtilitiesClient.pm";
+		$su_client = new installed_clients::kb_SetUtilitiesClient(Bio::KBase::utilities::utilconf("call_back_url"));
+	}
+	return $su_client;
+}
+
 sub get_object {
 	my ($ws,$id) = @_;
-	my $output = Bio::KBase::kbaseenv::ws_client()->get_objects();
+	my $output = Bio::KBase::kbaseenv::ws_client()->get_objects([Bio::KBase::kbaseenv::configure_ws_id($ws,$id)]);
 	return $output->[0]->{data};
 }
 
 sub get_objects {
+	my ($args,$options) = @_;
+	my $input = {
+		objects => $args,
+	};
+	my $output = Bio::KBase::kbaseenv::ws_client()->get_objects2($input);
+	return $output->{data};
+}
+
+sub list_objects {
 	my ($args) = @_;
-	return Bio::KBase::kbaseenv::ws_client()->get_objects($args);
+	return Bio::KBase::kbaseenv::ws_client()->list_objects($args);
 }
 
 sub get_object_info {
-	my ($argone,$argtwo) = @_;
-	return Bio::KBase::kbaseenv::ws_client()->get_object_info($argone,$argtwo);
+	my ($argone,$argtwo,$argthree) = @_;
+	my $params = {
+		objects => $argone,
+		includeMetadata => $argtwo,
+		ignoreErrors => $argthree
+	};
+	return Bio::KBase::kbaseenv::ws_client()->get_object_info3($params)->{infos};
 }
 
 sub administer {
@@ -139,35 +199,53 @@ sub add_object_created {
 
 sub save_objects {
 	my ($args) = @_;
-	my $output = Bio::KBase::kbaseenv::ws_client()->save_objects($args);
-	for (my $i=0; $i < @{$output}; $i++) {
-		my $array = [split(/\./,$output->[$i]->[2])];
-		my $description = $array->[1]." ".$output->[$i]->[1];
-		if (defined($output->[$i]->[10]) && defined($output->[$i]->[10]->{description})) {
-			$description = $output->[$i]->[10]->{description};
+	my $retryCount = 3;
+	my $error;
+	my $output;
+	while ($retryCount > 0) {
+		eval {
+			$output = Bio::KBase::kbaseenv::ws_client()->save_objects($args);
+			for (my $i=0; $i < @{$output}; $i++) {
+				my $array = [split(/\./,$output->[$i]->[2])];
+				my $description = $array->[1]." ".$output->[$i]->[1];
+				if (defined($output->[$i]->[10]) && defined($output->[$i]->[10]->{description})) {
+					$description = $output->[$i]->[10]->{description};
+				}
+				push(@{$objects_created},{
+					"ref" => $output->[$i]->[6]."/".$output->[$i]->[0]."/".$output->[$i]->[4],
+					description => $description
+				});
+			}
+		};
+		# If there is a network glitch, wait a second and try again. 
+		if ($@) {
+			$error = $@;
+		} else {
+			last;
 		}
-		push(@{$objects_created},{
-			"ref" => $output->[$i]->[6]."/".$output->[$i]->[0]."/".$output->[$i]->[4],
-			description => $description
-		});
+	}
+	if ($retryCount == 0) {
+		Bio::KBase::utilities::error($error);
 	}
 	return $output;
 }
 
-sub configure_ws_id {
-	my ($ws,$id) = @_;
-	my $input = {};
- 	if ($ws =~ m/^\d+$/) {
- 		$input->{wsid} = $ws;
-	} else {
-		$input->{workspace} = $ws;
+sub buildref {
+	my ($ws, $id, $version) = @_;
+	#Check if the ID is a ref or ref_path with a version
+	if ($id =~ m/^(([^\/]+)\/([^\/]+)\/(\d+);?)+$/) {
+		return $id;
 	}
-	if ($id =~ m/^\d+$/) {
-		$input->{objid} = $id;
-	} else {
-		$input->{name} = $id;
+	#Check if the ID contains lacks "/" which indicates that it is not a ref
+	elsif ($id !~ m/\//) {
+		#Removing any "/" that may appear at the end of the ws
+		$ws =~ s/\/$//;
+		$id = $ws . "/" . $id;
 	}
-	return $input;
+	if (defined $version) {
+		return $id . "/" . $version;
+	}
+	return $id;
 }
 
 sub initialize_call {

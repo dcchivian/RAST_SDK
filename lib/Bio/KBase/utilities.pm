@@ -17,6 +17,28 @@ our $processid = undef;
 our $loghandler;
 our $starttime = undef;
 our $arguments = undef;
+our $gapfilltable = undef;
+
+sub style {
+	return "	<style>
+	.reporttbl {
+		border:1px solid #C0C0C0;
+		border-collapse:collapse;
+		padding:5px;
+	}
+	.reporttbl th {
+		border:1px solid #C0C0C0;
+		padding:5px;
+		background:#F0F0F0;
+	}
+	.reporttbl td {
+		border:1px solid #C0C0C0;
+		text-align:left;
+		padding:5px;
+	}
+	</style>";
+}
+
 
 sub to_json {
     my ($ref,$prettyprint) = @_;
@@ -69,9 +91,24 @@ sub processid {
 }
 
 sub log {
-	my ($msg,$type) = @_;
-	$loghandler->util_log($msg,$type,Bio::KBase::utilities::processid());
+	my ($msg,$tag) = @_;
+	$loghandler->util_log($msg,$tag,Bio::KBase::utilities::processid());
 }
+
+sub gapfilling_html_table {
+	my ($args) = @_;
+	$args = Bio::KBase::utilities::args($args,[],{
+		message => undef,
+		append => 1,
+	});
+	if (defined($args->{message})) {
+		if ($args->{append} == 0 || !defined($gapfilltable)) {
+			$gapfilltable = "";
+		}
+		$gapfilltable .= $args->{message};
+	}
+	return $gapfilltable;
+};
 
 sub print_report_message {
 	my ($args) = @_;
@@ -168,7 +205,6 @@ sub read_config {
 	$config->{$args->{service}} = Bio::KBase::utilities::args($config->{$args->{service}},$args->{mandatory},$args->{optional});
 	$config->{UtilConfig} = Bio::KBase::utilities::args($config->{UtilConfig},[],{
 		fulltrace => 0,
-		reportimpl => 0,
 		call_back_url =>  $ENV{ SDK_CALLBACK_URL },
 		token => undef
 	});
